@@ -1,4 +1,4 @@
-use glam::{Vec2, vec3, Vec3, Mat4, Vec4Swizzles};
+use glam::{vec2, Vec2, vec3, Vec3, vec4, Mat4, Vec4Swizzles};
 use miniquad::*;
 use std::convert::TryInto;
 
@@ -13,6 +13,7 @@ struct Stage {
     pipeline: Pipeline,
     bindings: Bindings,
     primitive_indices: Vec<i32>,
+    mouse_pos: Vec2,
     view_pos: Vec3,
 }
 
@@ -80,32 +81,53 @@ impl Stage {
             }
         );
 
-        Stage { pipeline, bindings, primitive_indices, view_pos: vec3(0.0, 10.5, 10.5) }
+        Stage {
+            pipeline,
+            bindings,
+            primitive_indices,
+            mouse_pos: Vec2::from(ctx.screen_size()) / 2.0,
+            view_pos: vec3(0.0, 16.0, -5.0)
+        }
     }
+}
+
+fn unproject(win: Vec2, mvp: Mat4, viewport: Vec2) -> Vec3 {
+    mvp.inverse().transform_point3(vec3(
+        2.0 * win.x / viewport.x - 1.0,
+        2.0 * win.y / viewport.y - 1.0,
+        1.0,
+    ))
 }
 
 impl EventHandler for Stage {
     fn update(&mut self, _ctx: &mut Context) {}
 
     fn draw(&mut self, ctx: &mut Context) {
-        let spin = Mat4::from_rotation_y(date::now().sin() as f32 * std::f32::consts::PI);
-        let view_pos4 = spin * self.view_pos.extend(0.0);
-        let view_pos = view_pos4.xyz();
+        let &mut Self { view_pos, mouse_pos, .. } = self;
 
         let (width, height) = ctx.screen_size();
-        let proj = Mat4::perspective_rh_gl(60.0f32.to_radians(), width / height, 0.01, 50.0);
+        let proj = Mat4::perspective_rh_gl(45.0f32.to_radians(), width / height, 0.01, 50.0);
         let view = Mat4::look_at_rh(
             view_pos,
-            view_pos / -3.0,
+            vec3(0.0, 0.0, 7.0),
             vec3(0.0, 1.0, 0.0),
         );
-        let mvp = proj * view;
+        let mut mvp = proj * view;
+
+        let out = unproject(
+            vec2(mouse_pos.x, height - mouse_pos.y),
+            mvp,
+            ctx.screen_size().into()
+        );
+        let n = Vec3::unit_y();
+        let d = (Vec3::zero() - view_pos).dot(n) / out.dot(n);
+        mvp = mvp * Mat4::from_translation(view_pos + out * d);
 
         ctx.begin_default_pass(Default::default());
 
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_bindings(&self.bindings);
-        ctx.apply_uniforms(&shader::Uniforms { mvp, view_pos, });
+        ctx.apply_uniforms(&shader::Uniforms { mvp, });
         for pair in self.primitive_indices.windows(2) {
             if let &[start, end] = pair {
                 ctx.draw(start, end - start, 1);
@@ -114,6 +136,10 @@ impl EventHandler for Stage {
         ctx.end_render_pass();
 
         ctx.commit_frame();
+    }
+
+    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+        self.mouse_pos = vec2(x, y);
     }
 }
 
@@ -149,7 +175,6 @@ mod shader {
     varying lowp vec3 normal;
     varying lowp vec3 frag_pos;
 
-    uniform lowp vec3 view_pos;
     uniform sampler2D tex;
 
     void main() {
@@ -161,11 +186,7 @@ mod shader {
 
         lowp vec3 ambient = light_color * 0.2;
 
-        lowp vec3 view_dir = normalize(view_pos - frag_pos);
-        lowp vec3 reflect_dir = reflect(-light_dir, normal);
-        lowp vec3 specular = light_color * pow(max(dot(view_dir, reflect_dir), 0.0), 32.0) * 0.4;
-
-        gl_FragColor = texture2D(tex, texcoord) * vec4((ambient + diffuse + specular) * light_strength, 1.0);
+        gl_FragColor = texture2D(tex, texcoord) * vec4((ambient + diffuse) * light_strength, 1.0);
     }"#;
 
     pub fn meta() -> ShaderMeta {
@@ -174,7 +195,6 @@ mod shader {
             uniforms: UniformBlockLayout {
                 uniforms: vec![
                     UniformDesc::new("mvp", UniformType::Mat4),
-                    UniformDesc::new("view_pos", UniformType::Float3)
                 ],
             },
         }
@@ -183,6 +203,5 @@ mod shader {
     #[repr(C)]
     pub struct Uniforms {
         pub mvp: glam::Mat4,
-        pub view_pos: glam::Vec3,
     }
 }
