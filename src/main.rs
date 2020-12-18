@@ -1,60 +1,55 @@
-use glam::{vec2, Vec2, vec3, Vec3, vec4, Mat4, Vec4Swizzles};
+#![feature(array_map)]
+#![feature(new_uninit)]
+use glam::{vec2, Vec2, vec3, Vec3, Mat4};
 use miniquad::*;
 use std::convert::TryInto;
 
-#[repr(C)]
-struct Vertex {
-    pos: Vec3,
-    norm: Vec3,
-    uv: Vec2,
-}
+mod art;
+use art::{Art, ArtData, INDEX_COUNT};
 
 struct Stage {
     pipeline: Pipeline,
     bindings: Bindings,
-    primitive_indices: Vec<i32>,
     mouse_pos: Vec2,
     view_pos: Vec3,
 }
 
+unsafe fn transmute_copy_boxed<T, U>(src: &T) -> Box<U> {
+    let src = src as *const T as *const U;
+    
+    let layout = std::alloc::Layout::new::<U>();
+    
+    let dst = std::alloc::alloc(layout) as *mut U;
+    
+    if dst.is_null() {
+        std::alloc::handle_alloc_error(layout)
+    } else {
+        src.copy_to(dst, 1);
+        Box::from_raw(dst)
+    }
+}
+
 impl Stage {
     pub fn new(ctx: &mut Context) -> Stage {
-        let (doc, datas, images) = gltf::import("train.glb").unwrap();
-        let mesh_data = doc.meshes().next().expect("no meshes");
+        let (art, art_data) = unsafe {
+            use std::io::Read;
+            use std::mem::size_of;
+            let mut file = std::fs::File::open("train.cedset").unwrap();
 
-        let mut vertices = vec![];
-        let mut indices = vec![];
-        let mut primitive_indices = vec![0];
+            let mut art_bytes = [0; size_of::<Art>()];
+            file.read_exact(&mut art_bytes).unwrap();
+            let art: Art = std::mem::transmute(art_bytes);
 
-        for prim in mesh_data.primitives() {
-            let reader = prim.reader(|b| Some(&datas.get(b.index())?.0[..b.length()]));
-            vertices.extend(
-                reader
-                    .read_positions()
-                    .unwrap()
-                    .zip(reader.read_normals().unwrap())
-                    .zip(reader.read_tex_coords(0).unwrap().into_f32())
-                    .map(|((pos, norm), uv)| {
-                        Vertex { pos: pos.into(), norm: norm.into(), uv: uv.into() }
-                    })
-            );
-            indices.extend(
-                reader
-                    .read_indices()
-                    .unwrap()
-                    .into_u32()
-                    .map(|i| -> u16 {
-                        i.try_into().unwrap()
-                    })
-            );
-            primitive_indices.push(indices.len().try_into().unwrap());
-        }
+            let mut data_bytes = Box::new([0; size_of::<ArtData>()]);
+            file.read_exact(data_bytes.as_mut()).unwrap();
+            let data = transmute_copy_boxed::<[u8; size_of::<ArtData>()], ArtData>(data_bytes.as_ref());
 
-        let vertex_buffer = Buffer::immutable(ctx, BufferType::VertexBuffer, &vertices);
-        let index_buffer = Buffer::immutable(ctx, BufferType::IndexBuffer, &indices);
+            (art, data)
+        };
+        let vertex_buffer = Buffer::immutable(ctx, BufferType::VertexBuffer, &art_data.vertices);
+        let index_buffer = Buffer::immutable(ctx, BufferType::IndexBuffer, &art_data.indices);
 
-        let image = images.into_iter().next().unwrap();
-        let texture = Texture::from_rgba8(ctx, image.width as _, image.height as _, &image.pixels);
+        let texture = Texture::from_rgba8(ctx, 16, 16, &art_data.image);
         texture.set_filter(ctx, FilterMode::Nearest);
 
         let bindings = Bindings {
@@ -84,7 +79,6 @@ impl Stage {
         Stage {
             pipeline,
             bindings,
-            primitive_indices,
             mouse_pos: Vec2::from(ctx.screen_size()) / 2.0,
             view_pos: vec3(0.0, 16.0, -5.0)
         }
@@ -119,20 +113,17 @@ impl EventHandler for Stage {
             mvp,
             ctx.screen_size().into()
         );
+        let l = view_pos - out;
         let n = Vec3::unit_y();
-        let d = (Vec3::zero() - view_pos).dot(n) / out.dot(n);
-        mvp = mvp * Mat4::from_translation(view_pos + out * d);
+        let d = (Vec3::zero() - view_pos).dot(n) / l.dot(n);
+        mvp = mvp * Mat4::from_translation(view_pos + l * d);
 
         ctx.begin_default_pass(Default::default());
 
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_bindings(&self.bindings);
         ctx.apply_uniforms(&shader::Uniforms { mvp, });
-        for pair in self.primitive_indices.windows(2) {
-            if let &[start, end] = pair {
-                ctx.draw(start, end - start, 1);
-            }
-        }
+        ctx.draw(0, INDEX_COUNT.try_into().unwrap(), 1);
         ctx.end_render_pass();
 
         ctx.commit_frame();
