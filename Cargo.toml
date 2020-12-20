@@ -7,6 +7,8 @@ default-run = "train"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+
 [[bin]]
 name = "gltf-to-cedset"
 path = "src/gltf_to_cedset.rs"
@@ -16,7 +18,13 @@ required-features = [ "gltf" ]
 name = "train"
 path = "src/main.rs"
 
+[features]
+default = []
+gltf-to-cedset = [ "gltf", "serde_json", "serde" ]
+
 [dependencies]
 miniquad = "=0.3.0-alpha.24"
 glam = "0.11.2"
 gltf = { optional = true, version = "0.15.2" }
+serde_json = { version = "1.0.60", optional = true }
+serde = { version = "1.0.118", optional = true, features = [ "derive" ] }

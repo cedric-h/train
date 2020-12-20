@@ -1,87 +1,84 @@
-#![feature(array_map)]
-#![feature(new_uninit)]
-use glam::{vec2, Vec2, vec3, Vec3, Mat4};
+use glam::{vec2, vec3, Mat4, Vec2, Vec3};
 use miniquad::*;
-use std::convert::TryInto;
 
-mod art;
-use art::{Art, ArtData, INDEX_COUNT};
+use train::art::{Art, ArtData};
+mod render;
 
-struct Stage {
-    pipeline: Pipeline,
-    bindings: Bindings,
-    mouse_pos: Vec2,
-    view_pos: Vec3,
-}
+fn read_art_data() -> Box<ArtData> {
+    use std::io::Read;
+    const SIZE: usize = std::mem::size_of::<ArtData>();
 
-unsafe fn transmute_copy_boxed<T, U>(src: &T) -> Box<U> {
-    let src = src as *const T as *const U;
-    
-    let layout = std::alloc::Layout::new::<U>();
-    
-    let dst = std::alloc::alloc(layout) as *mut U;
-    
-    if dst.is_null() {
-        std::alloc::handle_alloc_error(layout)
-    } else {
-        src.copy_to(dst, 1);
-        Box::from_raw(dst)
+    let mut data_bytes = Box::new([0; SIZE]);
+    std::fs::File::open("train.cedset").unwrap().read_exact(data_bytes.as_mut()).unwrap();
+
+    unsafe {
+        unsafe fn transmute_copy_boxed<T, U>(src: &T) -> Box<U> {
+            let src = src as *const T as *const U;
+            let layout = std::alloc::Layout::new::<U>();
+            let dst = std::alloc::alloc(layout) as *mut U;
+
+            if dst.is_null() {
+                std::alloc::handle_alloc_error(layout)
+            } else {
+                src.copy_to(dst, 1);
+                Box::from_raw(dst)
+            }
+        }
+        
+        transmute_copy_boxed::<[u8; SIZE], ArtData>(data_bytes.as_ref())
     }
 }
 
+struct Stage {
+    mouse_pos: Vec2,
+    mouse_on_ground: Vec3,
+    cam_origin: Vec3,
+    cam_offset: Vec3,
+    track: Vec<Vec3>,
+    renderer: render::Renderer,
+}
+
 impl Stage {
-    pub fn new(ctx: &mut Context) -> Stage {
-        let (art, art_data) = unsafe {
-            use std::io::Read;
-            use std::mem::size_of;
-            let mut file = std::fs::File::open("train.cedset").unwrap();
-
-            let mut art_bytes = [0; size_of::<Art>()];
-            file.read_exact(&mut art_bytes).unwrap();
-            let art: Art = std::mem::transmute(art_bytes);
-
-            let mut data_bytes = Box::new([0; size_of::<ArtData>()]);
-            file.read_exact(data_bytes.as_mut()).unwrap();
-            let data = transmute_copy_boxed::<[u8; size_of::<ArtData>()], ArtData>(data_bytes.as_ref());
-
-            (art, data)
-        };
-        let vertex_buffer = Buffer::immutable(ctx, BufferType::VertexBuffer, &art_data.vertices);
-        let index_buffer = Buffer::immutable(ctx, BufferType::IndexBuffer, &art_data.indices);
-
-        let texture = Texture::from_rgba8(ctx, 16, 16, &art_data.image);
-        texture.set_filter(ctx, FilterMode::Nearest);
-
-        let bindings = Bindings {
-            vertex_buffers: vec![vertex_buffer],
-            index_buffer: index_buffer,
-            images: vec![texture],
-        };
-
-        let shader = Shader::new(ctx, shader::VERTEX, shader::FRAGMENT, shader::meta()).unwrap();
-
-        let pipeline = Pipeline::with_params(
-            ctx,
-            &[BufferLayout::default()],
-            &[
-                VertexAttribute::new("pos", VertexFormat::Float3),
-                VertexAttribute::new("norm", VertexFormat::Float3),
-                VertexAttribute::new("uv", VertexFormat::Float2)
-            ],
-            shader,
-            PipelineParams {
-                depth_test: Comparison::LessOrEqual,
-                depth_write: true,
-                ..Default::default()
-            }
-        );
+    fn new(ctx: &mut Context) -> Self {
+        let mut art_data = read_art_data();
+        let track = art_data.make_track();
 
         Stage {
-            pipeline,
-            bindings,
             mouse_pos: Vec2::from(ctx.screen_size()) / 2.0,
-            view_pos: vec3(0.0, 16.0, -5.0)
+            mouse_on_ground: track[0],
+            cam_offset: vec3(0.0, 16.0, -12.0),
+            cam_origin: track[0],
+            renderer: render::Renderer::new(ctx, art_data),
+            track,
         }
+    }
+
+    fn eye_pos(&self) -> Vec3 {
+        self.cam_origin + self.cam_offset
+    }
+}
+
+impl EventHandler for Stage {
+    fn update(&mut self, _ctx: &mut Context) {}
+
+    fn draw(&mut self, ctx: &mut Context) {
+        self.render(ctx);
+    }
+
+    fn resize_event(&mut self, ctx: &mut Context, _: f32, _: f32) {
+        self.renderer.resize(ctx);
+    }
+
+    fn mouse_motion_event(&mut self, ctx: &mut Context, x: f32, y: f32) {
+        self.mouse_pos = vec2(x, y);
+
+        let eye_pos = self.eye_pos();
+        let (w, h) = ctx.screen_size();
+        let out = unproject(vec2(x, h - y), self.view_proj(), vec2(w, h));
+        self.mouse_on_ground = line_plane_intersect(
+            eye_pos, eye_pos - out,
+            Vec3::zero(), Vec3::unit_y(),
+        );
     }
 }
 
@@ -93,106 +90,14 @@ fn unproject(win: Vec2, mvp: Mat4, viewport: Vec2) -> Vec3 {
     ))
 }
 
-impl EventHandler for Stage {
-    fn update(&mut self, _ctx: &mut Context) {}
-
-    fn draw(&mut self, ctx: &mut Context) {
-        let &mut Self { view_pos, mouse_pos, .. } = self;
-
-        let (width, height) = ctx.screen_size();
-        let proj = Mat4::perspective_rh_gl(45.0f32.to_radians(), width / height, 0.01, 50.0);
-        let view = Mat4::look_at_rh(
-            view_pos,
-            vec3(0.0, 0.0, 7.0),
-            vec3(0.0, 1.0, 0.0),
-        );
-        let mut mvp = proj * view;
-
-        let out = unproject(
-            vec2(mouse_pos.x, height - mouse_pos.y),
-            mvp,
-            ctx.screen_size().into()
-        );
-        let l = view_pos - out;
-        let n = Vec3::unit_y();
-        let d = (Vec3::zero() - view_pos).dot(n) / l.dot(n);
-        mvp = mvp * Mat4::from_translation(view_pos + l * d);
-
-        ctx.begin_default_pass(Default::default());
-
-        ctx.apply_pipeline(&self.pipeline);
-        ctx.apply_bindings(&self.bindings);
-        ctx.apply_uniforms(&shader::Uniforms { mvp, });
-        ctx.draw(0, INDEX_COUNT.try_into().unwrap(), 1);
-        ctx.end_render_pass();
-
-        ctx.commit_frame();
-    }
-
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
-        self.mouse_pos = vec2(x, y);
-    }
+fn line_plane_intersect(line_origin: Vec3, line: Vec3, plane_origin: Vec3, plane_normal: Vec3) -> Vec3 {
+    let d = (plane_origin - line_origin).dot(plane_normal) / line.dot(plane_normal);
+    line_origin + line * d
 }
+
 
 fn main() {
     miniquad::start(conf::Conf { sample_count: 4, ..conf::Conf::default() }, |mut ctx| {
         UserData::owning(Stage::new(&mut ctx), ctx)
     });
-}
-
-mod shader {
-    use miniquad::*;
-
-    pub const VERTEX: &str = r#"#version 100
-    attribute vec3 pos;
-    attribute vec3 norm;
-    attribute vec2 uv;
-
-    uniform mat4 mvp;
-
-    varying lowp vec2 texcoord;
-    varying lowp vec3 normal;
-    varying lowp vec3 frag_pos;
-
-    void main() {
-        gl_Position = mvp * vec4(pos, 1);
-        texcoord = uv;
-        normal = norm;
-        frag_pos = pos;
-    }"#;
-
-    pub const FRAGMENT: &str = r#"#version 100
-    varying lowp vec2 texcoord;
-    varying lowp vec3 normal;
-    varying lowp vec3 frag_pos;
-
-    uniform sampler2D tex;
-
-    void main() {
-        lowp vec3 light_dir = normalize(vec3(50.0, 50.0, 50.0) - frag_pos);
-        lowp vec3 light_color = vec3(1.0, 0.912, 0.802);
-        lowp float light_strength = 1.5;
-
-        lowp vec3 diffuse = light_color * max(dot(normal, light_dir), 0.2);
-
-        lowp vec3 ambient = light_color * 0.2;
-
-        gl_FragColor = texture2D(tex, texcoord) * vec4((ambient + diffuse) * light_strength, 1.0);
-    }"#;
-
-    pub fn meta() -> ShaderMeta {
-        ShaderMeta {
-            images: vec!["tex".to_string()],
-            uniforms: UniformBlockLayout {
-                uniforms: vec![
-                    UniformDesc::new("mvp", UniformType::Mat4),
-                ],
-            },
-        }
-    }
-
-    #[repr(C)]
-    pub struct Uniforms {
-        pub mvp: glam::Mat4,
-    }
 }
