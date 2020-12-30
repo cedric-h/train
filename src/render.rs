@@ -1,6 +1,6 @@
 use glam::{vec3, Mat4};
 use miniquad::*;
-use train::art::{ArtIndices, Art, ArtData};
+use train::art::{ArtData, ArtIndices};
 
 pub struct Renderer {
     pipeline: Pipeline,
@@ -57,7 +57,7 @@ impl Renderer {
 
 fn proj(ctx: &mut Context) -> Mat4 {
     let (width, height) = ctx.screen_size();
-    Mat4::perspective_rh_gl(45.0f32.to_radians(), width / height, 0.01, 50.0)
+    Mat4::perspective_rh_gl(45.0f32.to_radians(), width / height, 0.01, 250.0)
 }
 
 impl super::Stage {
@@ -69,24 +69,26 @@ impl super::Stage {
     }
 
     pub fn render(&mut self, ctx: &mut Context) {
-        let mut mvp = self.view_proj();
-        let &mut Self { mouse_on_ground, .. } = self;
+        let mut uni = shader::Uniforms::new(
+            self.view_proj(),
+            Mat4::identity(),
+        );
         let Self { renderer, .. } = self;
 
         ctx.begin_default_pass(Default::default());
 
         ctx.apply_pipeline(&renderer.pipeline);
         ctx.apply_bindings(&renderer.bindings);
-        ctx.apply_uniforms(&shader::Uniforms { mvp });
         {
+            ctx.apply_uniforms(&uni);
             let (start, num) = renderer.track_indices;
             ctx.draw(start, num, 1);
         }
-        {
-            mvp = mvp * Mat4::from_translation(mouse_on_ground);
-            ctx.apply_uniforms(&shader::Uniforms { mvp });
+        for &(art, model) in &self.render_queue.0 {
+            uni.set_model(model);
+            ctx.apply_uniforms(&uni);
 
-            let (start, num) = renderer.art_indices.indices(Art::Cart);
+            let (start, num) = renderer.art_indices.indices(art);
             ctx.draw(start, num, 1);
         }
         ctx.end_render_pass();
@@ -97,23 +99,26 @@ impl super::Stage {
 
 mod shader {
     use miniquad::*;
+    use glam::Mat4;
 
     pub const VERTEX: &str = r#"#version 100
     attribute vec3 pos;
     attribute vec3 norm;
     attribute vec2 uv;
 
-    uniform mat4 mvp;
+    uniform mat4 view_proj;
+    uniform mat4 model;
+    uniform mat4 inv_trans_model;
 
     varying lowp vec2 texcoord;
     varying lowp vec3 normal;
     varying lowp vec3 frag_pos;
 
     void main() {
-        gl_Position = mvp * vec4(pos, 1);
+        gl_Position = view_proj * model * vec4(pos, 1);
         texcoord = uv;
-        normal = norm;
-        frag_pos = pos;
+        normal = mat3(inv_trans_model) * norm;
+        frag_pos = vec3(model * vec4(pos, 1.0));
     }"#;
 
     pub const FRAGMENT: &str = r#"#version 100
@@ -124,13 +129,13 @@ mod shader {
     uniform sampler2D tex;
 
     void main() {
-        lowp vec3 light_dir = normalize(vec3(50.0, 50.0, 50.0) - frag_pos);
+        lowp vec3 light_dir = normalize(vec3(500.0, 500.0, 500.0) - frag_pos);
         lowp vec3 light_color = vec3(1.0, 0.912, 0.802);
-        lowp float light_strength = 1.5;
+        lowp float light_strength = 1.4;
 
-        lowp vec3 diffuse = light_color * max(dot(normal, light_dir), 0.2);
+        lowp vec3 diffuse = max(dot(normalize(normal), light_dir), 0.0) * light_color;
 
-        lowp vec3 ambient = light_color * 0.2;
+        lowp vec3 ambient = light_color * 0.3;
 
         gl_FragColor = texture2D(tex, texcoord) * vec4((ambient + diffuse) * light_strength, 1.0);
     }"#;
@@ -139,13 +144,34 @@ mod shader {
         ShaderMeta {
             images: vec!["tex".to_string()],
             uniforms: UniformBlockLayout {
-                uniforms: vec![UniformDesc::new("mvp", UniformType::Mat4)],
+                uniforms: vec![
+                    UniformDesc::new("view_proj", UniformType::Mat4),
+                    UniformDesc::new("model", UniformType::Mat4),
+                    UniformDesc::new("inv_trans_model", UniformType::Mat4),
+                ],
             },
         }
     }
 
     #[repr(C)]
     pub struct Uniforms {
-        pub mvp: glam::Mat4,
+        pub view_proj: Mat4,
+        pub model: Mat4,
+        pub inv_trans_model: Mat4,
+    }
+
+    impl Uniforms {
+        pub fn new(view_proj: Mat4, model: Mat4) -> Self {
+            Uniforms {
+                view_proj,
+                inv_trans_model: model.inverse().transpose(),
+                model,
+            }
+        }
+
+        pub fn set_model(&mut self, model: Mat4) {
+            self.model = model;
+            self.inv_trans_model = model.inverse().transpose();
+        }
     }
 }

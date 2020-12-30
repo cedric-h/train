@@ -1,4 +1,4 @@
-use glam::{vec3, Vec2, Vec3};
+use glam::{Vec2, Vec3};
 use std::convert::TryInto;
 
 #[derive(Default, Copy, Clone)]
@@ -11,7 +11,7 @@ pub struct Vertex {
 
 macro_rules! art {
     ( $( $enum:ident : $field:ident ; )* ) => {
-        #[derive(Copy, Clone)]
+        #[derive(Copy, Clone, Debug)]
         pub enum Art { $( $enum, )* }
 
         #[derive(Default)]
@@ -218,7 +218,7 @@ impl ArtData {
     }
 
     /// Turns the Track data into geometry.
-    pub fn make_track(&mut self) -> Vec<Vec3> {
+    pub fn make_track(&mut self) -> Vec<Vec2> {
         let start_index = self.last_occupied_index;
 
         let rails = (self.track.len() as f32) as usize;
@@ -227,12 +227,12 @@ impl ArtData {
         for i in 0..=rails {
             let end_i = if i == rails { 1 } else { i + 1 };
             let end = self.track.point(end_i as f32 / rails as f32);
-            let normal = (before - end).normalize().perp();
+            let normal = (before - end).normalize().perp() * 1.2;
 
             let middle = self.track.point(i as f32 / rails as f32);
             self.line(middle + normal, middle - normal, 0.2);
             before = middle;
-            points.push(vec3(middle.x, 0.0, middle.y));
+            points.push(middle);
         }
 
         let start: i32 = start_index.try_into().unwrap();

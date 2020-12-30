@@ -1,7 +1,7 @@
 #![feature(array_map)]
 use std::convert::TryInto;
 
-use train::art::{ArtData, Track, ArtIndicesBuilder, Vertex, IMAGE_SIZE};
+use train::art::{ArtData, ArtIndicesBuilder, Track, Vertex, IMAGE_SIZE};
 
 // Shamelessly lifted from `https://stackoverflow.com/a/42186553`.
 unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -48,11 +48,7 @@ fn main() {
 
         let name = mesh.name().unwrap();
         println!("processing {}", name);
-        art_indices_builder.insert(
-            name,
-            start_index,
-            current_index - start_index
-        );
+        art_indices_builder.insert(name, start_index, current_index - start_index);
     }
 
     println!(
@@ -71,12 +67,15 @@ fn main() {
 
     data.art_indices = art_indices_builder.unwrap();
 
-    let track: Vec<Vec<_>> = serde_json::from_str(&std::fs::read_to_string("track.json").unwrap()).unwrap();
+    let track: Vec<Vec<_>> =
+        serde_json::from_str(&std::fs::read_to_string("track.json").unwrap()).unwrap();
     data.track = Track::from_points(track.iter().next().unwrap());
 
     data.last_occupied_vert = current_vert.try_into().unwrap();
     data.last_occupied_index = current_index.try_into().unwrap();
 
-    unsafe { std::fs::write("train.cedset", as_u8_slice::<ArtData>(&data)).unwrap(); }
+    unsafe {
+        std::fs::write("train.cedset", as_u8_slice::<ArtData>(&data)).unwrap();
+    }
     println!("done!");
 }
